@@ -15,13 +15,8 @@ A command-line client and Python library for controlling [SweetVinyl SugarCube](
 
 ## Requirements
 
-Python 3.9 or later, plus the `requests` library:
-
-```bash
-pip install requests
-```
-
-The `curses` module used by the TUI is part of Python's standard library and requires no separate installation.
+* **sugarcube_client.py**: None, Any Python 3.9+ is all you need.
+* **sugarcube_menubar.py**: Uses the [Python rumps](https://github.com/jaredks/rumps) package.
 
 ---
 
