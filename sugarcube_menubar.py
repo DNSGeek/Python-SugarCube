@@ -37,8 +37,11 @@ except ImportError:
 # Import the client from the same directory as this script
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
-    from sugarcube_client import (SugarCubeClient, decode_status, load_config,
-                                  save_config)
+    from sugarcube_client import (
+        SugarCubeClient,
+        decode_status,
+        load_config,
+    )
 except ImportError:
     rumps.alert(
         "SugarCube",
@@ -66,9 +69,7 @@ ICON_ERROR = "⚠"  # menu bar icon when device unreachable
 class DeviceController:
     """Holds a SugarCubeClient and its last-known status for one device."""
 
-    def __init__(
-        self, name: str, url: str, pin: str = None, cookie: str = None
-    ):
+    def __init__(self, name: str, url: str, pin: str = None, cookie: str = None):
         self.name = name
         self.sc = SugarCubeClient(url)
         self.status = {}  # last decoded status dict
@@ -134,7 +135,7 @@ class SugarCubeMenuBarApp(rumps.App):
                     cookie=cfg.get("cookie"),
                 )
                 self.controllers[name] = ctrl
-            except Exception as e:
+            except Exception:
                 pass  # Device will show as errored on first poll
 
         # Pick the active device
@@ -178,7 +179,7 @@ class SugarCubeMenuBarApp(rumps.App):
         """Push latest status into menu items. Safe to call from any thread."""
         if ctrl.error:
             self.title = ICON_ERROR
-            self._status_item.title = f"Status: unreachable"
+            self._status_item.title = "Status: unreachable"
             self._repair_item.title = "Repair: —"
             self._denoise_item.title = "Denoise: —"
             self._recording_item.title = "Recording: —"
@@ -199,9 +200,7 @@ class SugarCubeMenuBarApp(rumps.App):
             self.title = ICON_CLIPPING if ctrl.clipping else ICON_IDLE
 
         # Status line: device name + route
-        self._status_item.title = (
-            f"{ctrl.name}  —  {s.get('audio_route', '?')}"
-        )
+        self._status_item.title = f"{ctrl.name}  —  {s.get('audio_route', '?')}"
 
         # Repair
         repair_on = "ON" in s.get("repair_mode", "")
@@ -366,9 +365,7 @@ class SugarCubeMenuBarApp(rumps.App):
         def do():
             try:
                 ctrl.sc.sample_noise(start=True)
-                rumps.notification(
-                    "SugarCube", ctrl.name, "Noise learning started."
-                )
+                rumps.notification("SugarCube", ctrl.name, "Noise learning started.")
             except Exception as e:
                 rumps.notification("SugarCube", "Error", str(e))
             ctrl.refresh()
@@ -384,9 +381,7 @@ class SugarCubeMenuBarApp(rumps.App):
         def do():
             try:
                 ctrl.sc.sample_noise(start=False)
-                rumps.notification(
-                    "SugarCube", ctrl.name, "Noise learning stopped."
-                )
+                rumps.notification("SugarCube", ctrl.name, "Noise learning stopped.")
             except Exception as e:
                 rumps.notification("SugarCube", "Error", str(e))
             ctrl.refresh()
@@ -402,9 +397,7 @@ class SugarCubeMenuBarApp(rumps.App):
         def do():
             try:
                 ctrl.sc.start_recording()
-                rumps.notification(
-                    "SugarCube", ctrl.name, "Recording started."
-                )
+                rumps.notification("SugarCube", ctrl.name, "Recording started.")
             except Exception as e:
                 rumps.notification("SugarCube", "Error", str(e))
             ctrl.refresh()
@@ -420,9 +413,7 @@ class SugarCubeMenuBarApp(rumps.App):
         def do():
             try:
                 ctrl.sc.stop_recording()
-                rumps.notification(
-                    "SugarCube", ctrl.name, "Recording stopped."
-                )
+                rumps.notification("SugarCube", ctrl.name, "Recording stopped.")
             except Exception as e:
                 rumps.notification("SugarCube", "Error", str(e))
             self._stop_rec_timer()
@@ -457,9 +448,7 @@ class SugarCubeMenuBarApp(rumps.App):
         def do():
             try:
                 ctrl.sc.identify()
-                rumps.notification(
-                    "SugarCube", ctrl.name, "Identify command sent."
-                )
+                rumps.notification("SugarCube", ctrl.name, "Identify command sent.")
             except Exception as e:
                 rumps.notification("SugarCube", "Error", str(e))
 
@@ -516,9 +505,7 @@ class SugarCubeMenuBarApp(rumps.App):
 
         # ── Click Repair submenu ─────────────────────────────────────
         repair_menu = rumps.MenuItem("Click Repair")
-        repair_menu.add(
-            rumps.MenuItem("Toggle Repair", callback=self._toggle_repair)
-        )
+        repair_menu.add(rumps.MenuItem("Toggle Repair", callback=self._toggle_repair))
         repair_level_menu = rumps.MenuItem("Repair Level")
         for i in range(1, 11):
             repair_level_menu.add(
@@ -540,9 +527,7 @@ class SugarCubeMenuBarApp(rumps.App):
             )
         denoise_menu.add(denoise_level_menu)
         self._denoise_level_menu = denoise_level_menu
-        denoise_menu.add(
-            rumps.MenuItem("Learn Noise", callback=self._learn_noise)
-        )
+        denoise_menu.add(rumps.MenuItem("Learn Noise", callback=self._learn_noise))
         denoise_menu.add(
             rumps.MenuItem("Stop Learning", callback=self._stop_learn_noise)
         )
@@ -550,22 +535,14 @@ class SugarCubeMenuBarApp(rumps.App):
 
         self.menu.add(rumps.separator)
 
-        self.menu.add(
-            rumps.MenuItem("Start Recording", callback=self._start_recording)
-        )
-        self.menu.add(
-            rumps.MenuItem("Stop Recording", callback=self._stop_recording)
-        )
+        self.menu.add(rumps.MenuItem("Start Recording", callback=self._start_recording))
+        self.menu.add(rumps.MenuItem("Stop Recording", callback=self._stop_recording))
 
         self.menu.add(rumps.separator)
 
         # ── Utility ─────────────────────────────────────────────────
-        self.menu.add(
-            rumps.MenuItem("Refresh Now", callback=self._refresh_now)
-        )
-        self.menu.add(
-            rumps.MenuItem("Identify Device", callback=self._identify)
-        )
+        self.menu.add(rumps.MenuItem("Refresh Now", callback=self._refresh_now))
+        self.menu.add(rumps.MenuItem("Identify Device", callback=self._identify))
         self.menu.add(rumps.separator)
         self.menu.add(rumps.MenuItem("Quit SugarCube", callback=self._quit))
 

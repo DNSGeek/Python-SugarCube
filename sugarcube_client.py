@@ -42,10 +42,9 @@ import time
 from datetime import datetime
 from http.cookiejar import CookieJar
 from typing import Optional
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.parse import urlencode, urljoin, urlparse, urlunparse
-from urllib.request import Request, build_opener, HTTPCookieProcessor
-
+from urllib.request import HTTPCookieProcessor, Request, build_opener
 
 CONFIG_PATH = os.path.expanduser("~/.sugarcube.json")
 
@@ -199,15 +198,9 @@ class SugarCubeClient:
         for c in cookies_to_remove:
             self._jar.clear(c.domain, c.path, c.name)
 
-        # Inject a new cookie by making a MockResponse the cookiejar will accept
-        parsed = urlparse(self.base_url)
-        domain = parsed.hostname or "localhost"
-
-        import http.cookiejar as _cj
-        import urllib.response as _ur
-
         class _MockResponse:
             """Minimal urllib response duck-type for CookieJar.extract_cookies."""
+
             def __init__(self, headers):
                 self._headers = headers
 
@@ -215,7 +208,9 @@ class SugarCubeClient:
                 return self
 
             def get_all(self, name, default=None):
-                return [v for k, v in self._headers if k.lower() == name.lower()] or default
+                return [
+                    v for k, v in self._headers if k.lower() == name.lower()
+                ] or default
 
         mock_req = Request(self.base_url)
         mock_resp = _MockResponse([("Set-Cookie", f"scauth={value}; Path=/")])
@@ -648,9 +643,7 @@ def decode_status(audio: dict) -> dict:
         "i2s_routing": I2S_MAP.get(
             audio.get("i2srouting"), audio.get("i2srouting", "?")
         ),
-        "repair_mode": AUDIO_MAP.get(
-            audio.get("audio"), audio.get("audio", "?")
-        ),
+        "repair_mode": AUDIO_MAP.get(audio.get("audio"), audio.get("audio", "?")),
         "sensitivity": audio.get("sensitivity", "?"),
         "sens_min": audio.get("sensitivity_min", "?"),
         "sens_max": audio.get("sensitivity_max", "?"),
@@ -684,7 +677,9 @@ def print_status(name: str, sc: SugarCubeClient):
     print(f"  Audio route    : {s['audio_route']}")
     print(f"  I2S routing    : {s['i2s_routing']}")
     print(f"  Repair mode    : {s['repair_mode']}")
-    print(f"  Click sens.    : {s['sensitivity']}  (range {s['sens_min']} - {s['sens_max']})")
+    print(
+        f"  Click sens.    : {s['sensitivity']}  (range {s['sens_min']} - {s['sens_max']})"
+    )
     print(f"  Denoise active : {s['denoise_active']}")
     print(f"  Denoise level  : {s['denoise_level']}")
     print(f"  EQ             : {s['eq']}")
@@ -798,9 +793,7 @@ def _draw_tui(
         return
 
     if not status:
-        _safe_addstr(
-            stdscr, 2, 2, "Waiting for data...", curses.color_pair(_C_WARN)
-        )
+        _safe_addstr(stdscr, 2, 2, "Waiting for data...", curses.color_pair(_C_WARN))
         stdscr.refresh()
         return
 
@@ -1090,12 +1083,8 @@ Examples:
     )
     p.add_argument("--device", help="Named device from config file")
     p.add_argument("--pin", help="4-digit pairing PIN")
-    p.add_argument(
-        "--cookie", help="Reuse a saved scauth cookie value to skip pairing"
-    )
-    p.add_argument(
-        "--timeout", type=int, default=None, help="HTTP timeout in seconds"
-    )
+    p.add_argument("--cookie", help="Reuse a saved scauth cookie value to skip pairing")
+    p.add_argument("--timeout", type=int, default=None, help="HTTP timeout in seconds")
     p.add_argument(
         "--json",
         action="store_true",
@@ -1193,18 +1182,10 @@ Examples:
     # config
     cfg = sub.add_parser("config", help="Manage the config file")
     cfg_grp = cfg.add_mutually_exclusive_group(required=True)
-    cfg_grp.add_argument(
-        "--list", action="store_true", help="List configured devices"
-    )
-    cfg_grp.add_argument(
-        "--add", metavar="NAME", help="Add or update a device by name"
-    )
-    cfg_grp.add_argument(
-        "--remove", metavar="NAME", help="Remove a device by name"
-    )
-    cfg_grp.add_argument(
-        "--default", metavar="NAME", help="Set the default device"
-    )
+    cfg_grp.add_argument("--list", action="store_true", help="List configured devices")
+    cfg_grp.add_argument("--add", metavar="NAME", help="Add or update a device by name")
+    cfg_grp.add_argument("--remove", metavar="NAME", help="Remove a device by name")
+    cfg_grp.add_argument("--default", metavar="NAME", help="Set the default device")
     cfg.add_argument("--url", dest="cfg_url", help="URL for --add")
     cfg.add_argument("--pin", dest="cfg_pin", help="PIN for --add")
 
@@ -1261,7 +1242,7 @@ def main():
                         f"{dname + marker:<20} {dcfg.get('url','?'):<35} "
                         f"{dcfg.get('pin','?'):<8} {cookie}"
                     )
-                print(f"\n  * = default device")
+                print("\n  * = default device")
         elif args.add:
             if not args.cfg_url:
                 print("ERROR: --url is required with --add", file=sys.stderr)
@@ -1406,9 +1387,7 @@ def main():
         if args.json:
             print(json.dumps(data, indent=2))
         else:
-            print(
-                f"Clipping indicator: {'active' if data.get('html') else 'clear'}"
-            )
+            print(f"Clipping indicator: {'active' if data.get('html') else 'clear'}")
             sc.clear_clipping()
             print("Clipping indicator cleared.")
 
