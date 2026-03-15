@@ -28,7 +28,7 @@ Config file (~/.sugarcube.json):
     }
 
 Requirements:
-    pip install requests
+    Python 3.9+ standard library only — no third-party packages needed.
 """
 
 import argparse
@@ -40,17 +40,11 @@ import sys
 import threading
 import time
 from datetime import datetime
+from http.cookiejar import CookieJar
 from typing import Optional
-from urllib.parse import urljoin, urlparse, urlunparse
-
-try:
-    import requests
-    from requests import Session
-except ImportError:
-    sys.stderr.write(
-        "ERROR: 'requests' library not found. Install it with:  pip install requests\n\n"
-    )
-    sys.exit(1)
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode, urljoin, urlparse, urlunparse
+from urllib.request import Request, build_opener, HTTPCookieProcessor
 
 
 CONFIG_PATH = os.path.expanduser("~/.sugarcube.json")
@@ -67,10 +61,7 @@ def load_config() -> dict:
             with open(CONFIG_PATH) as f:
                 return json.load(f)
         except (json.JSONDecodeError, OSError) as e:
-            logging.warning(
-                f"Could not read config file {CONFIG_PATH}: {e}",
-                file=sys.stderr,
-            )
+            logging.warning(f"Could not read config file {CONFIG_PATH}: {e}")
     return {}
 
 
@@ -81,17 +72,28 @@ def save_config(config: dict):
             json.dump(config, f, indent=4)
         logging.debug(f"Config saved to {CONFIG_PATH}")
     except OSError as e:
-        logging.error(
-            f"Could not write config file {CONFIG_PATH}: {e}", file=sys.stderr
-        )
+        logging.error(f"Could not write config file {CONFIG_PATH}: {e}")
 
 
 def config_save_cookie(config: dict, device_name: str, cookie: str):
     """Persist an scauth cookie back into the config for a named device."""
-    config.setdefault("devices", {}).setdefault(device_name, {})[
-        "cookie"
-    ] = cookie
+    config.setdefault("devices", {}).setdefault(device_name, {})["cookie"] = cookie
     save_config(config)
+
+
+# ---------------------------------------------------------------------------
+# HTTP error helper
+# ---------------------------------------------------------------------------
+
+
+class HTTPStatusError(Exception):
+    """Raised when the server returns a non-2xx status code."""
+
+    def __init__(self, status: int, reason: str, body: bytes = b""):
+        super().__init__(f"HTTP {status}: {reason}")
+        self.status = status
+        self.reason = reason
+        self.body = body
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +106,7 @@ class SugarCubeClient:
     Client for a single SugarCube device.
 
     Authentication uses a 4-digit PIN to obtain a session cookie ('scauth')
-    that is stored in the requests Session and reused automatically.
+    that is stored in a CookieJar and reused automatically.
 
     Example:
         sc = SugarCubeClient("http://192.168.1.50")
@@ -126,10 +128,11 @@ class SugarCubeClient:
             parsed = parsed._replace(netloc=netloc)
         self.base_url = urlunparse(parsed).rstrip("/")
         self.timeout = timeout
-        self.session = Session()
-        self.session.headers.update(
-            {"User-Agent": "SugarCubePythonClient/1.0"}
-        )
+
+        # Cookie jar replaces requests.Session cookie management
+        self._jar = CookieJar()
+        self._opener = build_opener(HTTPCookieProcessor(self._jar))
+        self._opener.addheaders = [("User-Agent", "SugarCubePythonClient/1.0")]
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -138,12 +141,27 @@ class SugarCubeClient:
     def _url(self, path: str) -> str:
         return urljoin(self.base_url + "/", path.lstrip("/"))
 
+    def _request(self, req: Request) -> dict:
+        """Execute a request, raise HTTPStatusError on non-2xx, return parsed JSON."""
+        try:
+            with self._opener.open(req, timeout=self.timeout) as resp:
+                body = resp.read()
+                if resp.status < 200 or resp.status >= 300:
+                    raise HTTPStatusError(resp.status, resp.reason, body)
+                try:
+                    return json.loads(body.decode("utf-8"))
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    return {}
+        except HTTPError as e:
+            body = e.read() if hasattr(e, "read") else b""
+            raise HTTPStatusError(e.code, e.reason, body) from e
+
     def _get(self, path: str, params: Optional[dict] = None) -> dict:
-        resp = self.session.get(
-            self._url(path), params=params, timeout=self.timeout
-        )
-        resp.raise_for_status()
-        return resp.json()
+        url = self._url(path)
+        if params:
+            url = f"{url}?{urlencode(params)}"
+        req = Request(url, method="GET")
+        return self._request(req)
 
     def _post(
         self,
@@ -151,37 +169,57 @@ class SugarCubeClient:
         data: Optional[dict] = None,
         json_body: Optional[dict] = None,
     ) -> dict:
+        url = self._url(path)
         if json_body is not None:
-            resp = self.session.post(
-                self._url(path),
-                json=json_body,
+            body = json.dumps(json_body).encode("utf-8")
+            req = Request(
+                url,
+                data=body,
                 headers={"Content-Type": "application/json"},
-                timeout=self.timeout,
+                method="POST",
             )
         else:
-            resp = self.session.post(
-                self._url(path), data=data or {}, timeout=self.timeout
+            encoded = urlencode(data or {}).encode("utf-8")
+            req = Request(
+                url,
+                data=encoded,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                method="POST",
             )
-        resp.raise_for_status()
-        try:
-            return resp.json()
-        except Exception:
-            return {}
+        return self._request(req)
 
     def _set_cookie(self, value: str):
         """
-        Set the scauth cookie, clearing any existing instances first.
-        requests can accumulate duplicates if the server sends a Set-Cookie header
-        AND the response body also contains the token, causing CookieConflictError.
-        cookiejar.clear() requires domain+path on Python 3.9, so we remove
-        matching cookies directly from the jar instead.
+        Set the scauth cookie, replacing any existing instances.
+        We clear matching cookies from the jar manually to avoid duplicates,
+        then inject a new one via a synthetic Set-Cookie response.
         """
-        cookies_to_remove = [
-            c for c in self.session.cookies if c.name == "scauth"
-        ]
+        # Remove all existing scauth cookies from the jar
+        cookies_to_remove = [c for c in self._jar if c.name == "scauth"]
         for c in cookies_to_remove:
-            self.session.cookies.clear(c.domain, c.path, c.name)
-        self.session.cookies.set("scauth", value)
+            self._jar.clear(c.domain, c.path, c.name)
+
+        # Inject a new cookie by making a MockResponse the cookiejar will accept
+        parsed = urlparse(self.base_url)
+        domain = parsed.hostname or "localhost"
+
+        import http.cookiejar as _cj
+        import urllib.response as _ur
+
+        class _MockResponse:
+            """Minimal urllib response duck-type for CookieJar.extract_cookies."""
+            def __init__(self, headers):
+                self._headers = headers
+
+            def info(self):
+                return self
+
+            def get_all(self, name, default=None):
+                return [v for k, v in self._headers if k.lower() == name.lower()] or default
+
+        mock_req = Request(self.base_url)
+        mock_resp = _MockResponse([("Set-Cookie", f"scauth={value}; Path=/")])
+        self._jar.extract_cookies(mock_resp, mock_req)  # type: ignore[arg-type]
 
     # ------------------------------------------------------------------
     # Authentication / Pairing
@@ -190,7 +228,7 @@ class SugarCubeClient:
     def pair(self, pin: str) -> bool:
         """
         Authenticate with a 4-digit PIN displayed on the SugarCube.
-        Stores the returned 'scauth' cookie in the session for subsequent calls.
+        Stores the returned 'scauth' cookie for subsequent calls.
 
         Args:
             pin: 4-digit pairing code shown on the device.
@@ -203,16 +241,13 @@ class SugarCubeClient:
         try:
             data = self._post(
                 "/api/v1/pair",
-                data={
-                    "code": pin,
-                    "desc": "SugarCubePythonClient",
-                },
+                data={"code": pin, "desc": "SugarCubePythonClient"},
             )
             if "scauth" in data:
                 self._set_cookie(data["scauth"])
             return True
-        except requests.HTTPError as e:
-            if e.response is not None and e.response.status_code in (401, 403):
+        except HTTPStatusError as e:
+            if e.status in (401, 403):
                 return False
             raise
 
@@ -224,15 +259,12 @@ class SugarCubeClient:
         try:
             data = self._post(
                 "/api/v1/pair",
-                data={
-                    "code": "auto",
-                    "desc": "SugarCubePythonClient",
-                },
+                data={"code": "auto", "desc": "SugarCubePythonClient"},
             )
             if "scauth" in data:
                 self._set_cookie(data["scauth"])
             return True
-        except requests.HTTPError:
+        except HTTPStatusError:
             return False
 
     def load_cookie(self, scauth_value: str):
@@ -246,14 +278,10 @@ class SugarCubeClient:
 
     def get_cookie(self) -> Optional[str]:
         """Return the current scauth cookie value (save it to avoid re-pairing)."""
-        try:
-            return self.session.cookies.get("scauth")
-        except Exception:
-            # Fall back to first match if duplicates somehow remain
-            for cookie in self.session.cookies:
-                if cookie.name == "scauth":
-                    return cookie.value
-            return None
+        for cookie in self._jar:
+            if cookie.name == "scauth":
+                return cookie.value
+        return None
 
     # ------------------------------------------------------------------
     # Status / Monitoring
@@ -282,9 +310,7 @@ class SugarCubeClient:
             xmosdata        : int    - encodes sample rate (bits 1+) and bit depth (bit 0)
             model           : int    - device model number
         """
-        return self._get(
-            "/api/v1/audiosystemstatus", params={"format": "html"}
-        )
+        return self._get("/api/v1/audiosystemstatus", params={"format": "html"})
 
     def get_recording_status(self) -> dict:
         """
@@ -420,9 +446,7 @@ class SugarCubeClient:
             route: "processed" | "bypass" | "bridging"
         """
         if route not in ("processed", "bypass", "bridging"):
-            raise ValueError(
-                "route must be 'processed', 'bypass', or 'bridging'."
-            )
+            raise ValueError("route must be 'processed', 'bypass', or 'bridging'.")
         self._get("/api/v1/audiosystemchange", params={"audio_route": route})
 
     def set_i2s_routing(self, routing: int):
@@ -436,15 +460,11 @@ class SugarCubeClient:
 
     def set_headphone_volume(self, volume: int):
         """Set headphone amplifier volume."""
-        self._get(
-            "/api/v1/audiosystemchange", params={"headphone_volume": volume}
-        )
+        self._get("/api/v1/audiosystemchange", params={"headphone_volume": volume})
 
     def set_headphone_mute(self, muted: bool):
         """Mute or unmute the headphone output."""
-        self._get(
-            "/api/v1/audiosystemchange", params={"headphone_mute": muted}
-        )
+        self._get("/api/v1/audiosystemchange", params={"headphone_mute": muted})
 
     def set_gain(
         self,
@@ -540,9 +560,7 @@ class SugarCubeClient:
 
     def connect_wifi(self, ssid: str, password: str):
         """Connect to a WiFi network."""
-        self._post(
-            "/api/v1/wificonnect", data={"ssid": ssid, "password": password}
-        )
+        self._post("/api/v1/wificonnect", data={"ssid": ssid, "password": password})
 
 
 # ---------------------------------------------------------------------------
@@ -569,9 +587,7 @@ class SugarCubeManager:
     def __init__(self):
         self._devices: dict[str, SugarCubeClient] = {}
 
-    def add(
-        self, name: str, base_url: str, timeout: int = 10
-    ) -> SugarCubeClient:
+    def add(self, name: str, base_url: str, timeout: int = 10) -> SugarCubeClient:
         client = SugarCubeClient(base_url, timeout=timeout)
         self._devices[name] = client
         return client
@@ -660,7 +676,7 @@ def print_status(name: str, sc: SugarCubeClient):
 
     try:
         audio = sc.get_audio_status()
-    except requests.HTTPError as e:
+    except HTTPStatusError as e:
         print(f"  ERROR fetching audio status: {e}")
         return
 
@@ -668,9 +684,7 @@ def print_status(name: str, sc: SugarCubeClient):
     print(f"  Audio route    : {s['audio_route']}")
     print(f"  I2S routing    : {s['i2s_routing']}")
     print(f"  Repair mode    : {s['repair_mode']}")
-    print(
-        f"  Click sens.    : {s['sensitivity']}  (range {s['sens_min']} - {s['sens_max']})"
-    )
+    print(f"  Click sens.    : {s['sensitivity']}  (range {s['sens_min']} - {s['sens_max']})")
     print(f"  Denoise active : {s['denoise_active']}")
     print(f"  Denoise level  : {s['denoise_level']}")
     print(f"  EQ             : {s['eq']}")
@@ -804,9 +818,7 @@ def _draw_tui(
             f"{label:<{col_v - col_l - 1}}",
             curses.color_pair(_C_LABEL),
         )
-        _safe_addstr(
-            stdscr, row, col_v, str(value), curses.color_pair(val_colour)
-        )
+        _safe_addstr(stdscr, row, col_v, str(value), curses.color_pair(val_colour))
 
     def lv_right(row, label, value, val_colour=_C_VALUE):
         lv(row, label, value, col_l=COL_R, col_v=COL_RV, val_colour=val_colour)
@@ -1114,17 +1126,13 @@ Examples:
     rg = r.add_mutually_exclusive_group()
     rg.add_argument("--on", action="store_true", help="Enable click repair")
     rg.add_argument("--off", action="store_true", help="Disable click repair")
-    r.add_argument(
-        "--sensitivity", type=float, help="Set repair sensitivity level"
-    )
+    r.add_argument("--sensitivity", type=float, help="Set repair sensitivity level")
 
     # denoise
     d = sub.add_parser("denoise", help="Control noise reduction")
     dg = d.add_mutually_exclusive_group()
     dg.add_argument("--on", action="store_true", help="Enable noise reduction")
-    dg.add_argument(
-        "--off", action="store_true", help="Disable noise reduction"
-    )
+    dg.add_argument("--off", action="store_true", help="Disable noise reduction")
     d.add_argument("--level", type=float, help="Set denoise level")
     d.add_argument(
         "--sample",
@@ -1158,9 +1166,7 @@ Examples:
 
     # volume
     vol = sub.add_parser("volume", help="Control headphone volume")
-    vol.add_argument(
-        "--set", type=int, metavar="LEVEL", help="Set volume level"
-    )
+    vol.add_argument("--set", type=int, metavar="LEVEL", help="Set volume level")
     vol.add_argument("--mute", action="store_true", help="Mute headphones")
     vol.add_argument("--unmute", action="store_true", help="Unmute headphones")
 

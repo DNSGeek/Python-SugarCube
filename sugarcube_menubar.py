@@ -7,6 +7,7 @@ Requires sugarcube_client.py to be in the same directory.
 
 Requirements:
     pip install rumps
+    sugarcube_client.py must be in the same directory (no other dependencies needed)
 
 Usage:
     python sugarcube_menubar.py
@@ -30,14 +31,6 @@ try:
 except ImportError:
     sys.stderr.write(
         "ERROR: 'rumps' not found. Install it with:  pip install rumps\n\n"
-    )
-    sys.exit(1)
-
-try:
-    import requests
-except ImportError:
-    sys.stderr.write(
-        "ERROR: 'requests' not found. Install it with:  pip install requests/n/n"
     )
     sys.exit(1)
 
