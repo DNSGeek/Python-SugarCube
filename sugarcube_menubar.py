@@ -37,11 +37,7 @@ except ImportError:
 # Import the client from the same directory as this script
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
-    from sugarcube_client import (
-        SugarCubeClient,
-        decode_status,
-        load_config,
-    )
+    from sugarcube_client import SugarCubeClient, decode_status, load_config
 except ImportError:
     rumps.alert(
         "SugarCube",
